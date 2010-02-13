@@ -1,21 +1,29 @@
 /**
- * Copyright 2009 
+ * Copyright 2009
  * Sean Voisen <http://gizmologi.st>
  * Beatriz da Costa <http://beatrizdacosta.net>
  *
+ * Thanks to Jerome Despatis <jerome@despatis.com> for initial testing, 
+ * improvements and debugging.
+ *
+ * VERSION 003
+ * 2009/09/19 - John Jarvis <http://jarv.org>
+ *   - fixed issue with last data packet being less than packageSize in getJPEGPicture
+ *   - added checksum validation for detecting errors
+ *
  * Based on the .NET driver authored by Pavel Bansky <http://bansky.net>
  *
- * Licensed under the Apache License, Version 2.0 (the "License"); 
- * you may not use this file except in compliance with the License. 
- * You may obtain a copy of the License at 
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0 
+ *   http://www.apache.org/licenses/LICENSE-2.0
  *
- * Unless required by applicable law or agreed to in writing, software 
- * distributed under the License is distributed on an "AS IS" BASIS, 
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. 
- * See the License for the specific language governing permissions and 
- * limitations under the License. 
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 #include "CameraC328R.h"
@@ -53,7 +61,7 @@ CameraC328R::CameraC328R()
 }
 
 /**
- * Performs synchronization with the camera. Synchronization will be attempted 
+ * Performs synchronization with the camera. Synchronization will be attempted
  * up to MAX_SYNC_ATTEMPTS. Before you can do anything with the camera, you
  * must synchronize! Call this method first.
  *
@@ -63,11 +71,11 @@ bool CameraC328R::sync()
 {
   uint8_t attempts = 0;
   bool success;
-  
+
   // Create the sync command
   createCommand( CMD_SYNC, 0, 0, 0, 0 );
 
-  while( attempts < MAX_SYNC_ATTEMPTS ) 
+  while( attempts < MAX_SYNC_ATTEMPTS )
   {
     // Send a SYNC command
     sendCommand();
@@ -108,7 +116,7 @@ bool CameraC328R::sync()
  * be a value from the ColorType enumeration.
  * @param previewResolution The resolution to use for preview images.
  * This should be a value from the PreviewResolution enumeration.
- * @param jpegResolution The resolution to use for JPEG photos. This 
+ * @param jpegResolution The resolution to use for JPEG photos. This
  * should be a value from the JPEGResolution enumeration.
  *
  * @return True if successful, false otherwise.
@@ -121,7 +129,7 @@ bool CameraC328R::initial( ColorType colorType, PreviewResolution previewResolut
   if( waitForACK( RESPONSE_DELAY, CMD_INITIAL ) )
   {
     return true;
-  } 
+  }
 
   return false;
 }
@@ -184,7 +192,7 @@ bool CameraC328R::setPackageSize( uint16_t size )
  */
 bool CameraC328R::snapshot( SnapshotType snapshotType, uint16_t skipFrames )
 {
-  createCommand( CMD_SNAPSHOT, snapshotType, (byte)(skipFrames & 0xFF), (byte)(skipFrames >> 8), 0 ); 
+  createCommand( CMD_SNAPSHOT, snapshotType, (byte)(skipFrames & 0xFF), (byte)(skipFrames >> 8), 0 );
   sendCommand();
 
   if( waitForACK( RESPONSE_DELAY, CMD_SNAPSHOT ) )
@@ -212,7 +220,7 @@ bool CameraC328R::snapshot( SnapshotType snapshotType, uint16_t skipFrames )
  *
  * @return True if successful, false otherwise
  */
-bool CameraC328R::getJPEGPicture( PictureType pictureType, uint16_t processDelay, void (*callback)( uint16_t picSize, uint16_t packPicDataSize, uint16_t packCount, byte* pack ) )
+bool CameraC328R::getJPEGPicture( PictureType pictureType, uint16_t processDelay, void (*callback)( uint16_t picSize, uint16_t packPicDataSize, uint16_t packCount, byte* pack))
 {
   uint16_t pictureSize = 0;
 
@@ -225,42 +233,76 @@ bool CameraC328R::getJPEGPicture( PictureType pictureType, uint16_t processDelay
   uint16_t packageCount = 0;
   // The size of the picture data within the package
   uint16_t packagePictureDataSize = 0;
-  // Current byte position in the ENTIRE image
-  uint16_t pictureDataPosition = 0; 
+  // The size of the picture ID within the package
+  uint16_t packagePictureID = 0;
 
-  byte package[_packageSize];
-  bool packageSuccess;
+
+  // Current byte position in the ENTIRE image
+  uint16_t pictureDataPosition = 0;
 
   // Wait for MAX_ERRORS before aborting
   while( pictureDataPosition < pictureSize && errorCount < MAX_ERRORS )
   {
-    sendACK( 0, packageCount );
-
+    sendACK( 0, packageCount );  // send the first ack
     // Give it time to process and transmit data
     delay( PACKAGE_DELAY );
 
-    // Wait for the package
-    packageSuccess = waitForResponse( processDelay, package, _packageSize );
-
-    if( packageSuccess )
+    uint8_t package_header[PACKAGE_DATA_START];
+    // Wait for the package header
+    if(!waitForResponse( processDelay, package_header, sizeof(package_header)))
     {
-      // This is actually the size of the picture
-      // data within the package
-      packagePictureDataSize = package[3] << 8;
-      packagePictureDataSize |= package[2];
+    	errorCount = MAX_ERRORS;
+    	break;
+    }
 
-      // Call the callback
-      // Add PACKAGE_DATA_START to package address so user can begin grabbing
-      // picture data without worrying about 4 byte offset
-      callback( pictureSize, packagePictureDataSize, packageCount, package + PACKAGE_DATA_START );
-      
-      pictureDataPosition += packagePictureDataSize;
-      packageCount++;
-    }
-    else
+
+    // This is the ID
+    packagePictureID = package_header[1] << 8;
+    packagePictureID |= package_header[0];
+
+    // Size of the data payload
+    packagePictureDataSize = package_header[3] << 8;
+    packagePictureDataSize |= package_header[2];
+
+    // Read the image data
+    uint8_t package_data[packagePictureDataSize];
+    if (!waitForResponse( processDelay, package_data, sizeof(package_data)))
     {
-      errorCount++;
+    	errorCount = MAX_ERRORS;
+    	break;
     }
+    // Read the checksum
+    uint8_t chksum_data[PACKAGE_DATA_END_OFFSET];
+    if (!waitForResponse( processDelay, chksum_data, sizeof(chksum_data)))
+    {
+    	errorCount = MAX_ERRORS;
+    	break;
+    }
+
+    uint8_t chksum_calc = 0;
+
+    for (uint8_t i = 0; i < sizeof(package_header) ; i++)
+    {
+    	chksum_calc += package_header[i];
+    }
+
+    for (uint8_t i = 0; i < sizeof(package_data); i++)
+    {
+    	chksum_calc += package_data[i];
+    }
+
+
+    if (chksum_calc == chksum_data[0])
+    {
+		// Call the callback
+		pictureDataPosition += packagePictureDataSize;
+		callback( pictureSize, packagePictureDataSize, packageCount, package_data);
+		packageCount++;
+    } else {
+    	//invalid checksum try again
+    	errorCount++;
+    }
+
   }
 
   // Send last ACK
@@ -293,7 +335,7 @@ bool CameraC328R::reset( bool completeReset )
   {
     return true;
   }
-  
+
   return false;
 }
 
@@ -336,7 +378,7 @@ bool CameraC328R::getRawPicture( PictureType pictureType, byte pictureBuffer[], 
 
   if( pictureSize > bufferSize )
     return false;
-  else 
+  else
     bufferSize = pictureSize;
 
   // Wait for the package
@@ -500,7 +542,7 @@ bool CameraC328R::waitForResponse( uint32_t timeout )
  */
 bool CameraC328R::waitForResponse( uint32_t timeout, byte buffer[], uint16_t bufferLength )
 {
-  uint16_t byteCnt = 0;
+  uint8_t byteCnt = 0;
   unsigned long time = millis();
 
   while( millis() - time <= timeout )
@@ -517,5 +559,10 @@ bool CameraC328R::waitForResponse( uint32_t timeout, byte buffer[], uint16_t buf
     }
   }
 
-  return byteCnt > 0 ? true : false;
+  if( byteCnt > 0 )
+  {
+    return true;
+  }
+
+  return false;
 }
