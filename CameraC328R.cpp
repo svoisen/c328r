@@ -55,7 +55,8 @@ static const byte RAW_ACK = 0x0A;
 /**
  * Constructor.
  */
-CameraC328R::CameraC328R()
+CameraC328R::CameraC328R( const HardwareSerial& sserial )
+  : _serial( sserial )
 {
   _packageSize = DEFAULT_PACKAGE_SIZE;
 }
@@ -91,7 +92,7 @@ bool CameraC328R::sync()
       if( success && _receive_cmd[1] == CMD_SYNC )
       {
         // All good, flush the buffer
-        Serial.flush();
+        _serial.flush();
 
         // Now send an ACK
         createCommand( CMD_ACK, CMD_SYNC, 0, 0, 0 );
@@ -474,7 +475,7 @@ void CameraC328R::sendCommand()
 
   for( i = 0; i < CMD_SIZE; i++ )
   {
-    Serial.print( _command[i], BYTE );
+    _serial.print( _command[i], BYTE );
   }
 }
 
@@ -547,9 +548,9 @@ bool CameraC328R::waitForResponse( uint32_t timeout, byte buffer[], uint16_t buf
 
   while( millis() - time <= timeout )
   {
-    while( Serial.available() > 0 )
+    while( _serial.available() > 0 )
     {
-      buffer[byteCnt] = Serial.read();
+      buffer[byteCnt] = _serial.read();
       byteCnt++;
 
       if( byteCnt == bufferLength )

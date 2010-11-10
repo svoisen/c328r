@@ -116,7 +116,7 @@ class CameraC328R
       BAUD115200 = 0x0F
     };
 
-    CameraC328R();
+    CameraC328R( const HardwareSerial& = Serial);
     bool sync();
     bool reset( bool );
     bool powerOff();
@@ -129,6 +129,7 @@ class CameraC328R
     bool getRawPicture( PictureType, byte[], uint16_t&, uint16_t );
 
   private:
+    HardwareSerial _serial;
     uint16_t _packageSize;
     byte _command[CMD_SIZE];
     byte _receive_cmd[CMD_SIZE];
